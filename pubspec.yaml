@@ -1,5 +1,5 @@
 name: personal_shopper
-description: A new Flutter project for delivery and services.
+description: A new Flutter project for delivery and services with Firebase backend.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   shared_preferences: ^2.2.3
   url_launcher: ^6.2.5
+  firebase_core: ^2.27.0
+  firebase_database: ^10.4.9
 
 dev_dependencies:
   flutter_test:
