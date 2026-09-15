@@ -24,6 +24,9 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Generate Android Scaffold
+        run: flutter create . --platforms=android --org com.ghaith.shopper
+
       - name: Get Dependencies
         run: flutter pub get
 
