@@ -2,13 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'dart:convert';
 import 'dart:async';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    debugPrint("Firebase init error: $e");
+  }
+
   await AppSession.loadData();
-  AppSession.startOrderManager(); 
   runApp(const DeliveryApp());
 }
 
@@ -40,61 +48,62 @@ class AppSession {
   static List<Map<String, dynamic>> orderHistory = [];
   static List<String> validCaptainCodes = [];
 
-  static void startOrderManager() {
-    Timer.periodic(const Duration(seconds: 1), (timer) {
-      bool needsSave = false;
-      for (var o in activeOrders) {
-        if (o['status'] == 'pending') {
-          o['timeAtCurrentCaptain'] = (o['timeAtCurrentCaptain'] as int? ?? 0) + 1;
-          if ((o['timeAtCurrentCaptain'] as int) >= 5) {
-            List<String> queue = List<String>.from(o['captainQueue'] ?? <String>[]);
-            if (queue.isNotEmpty) queue.removeAt(0);
-            o['captainQueue'] = queue;
-            
-            if (queue.isEmpty) {
-              o['status'] = 'failed';
-            } else {
-              o['targetCaptain'] = queue[0];
-              o['timeAtCurrentCaptain'] = 0;
-            }
-            needsSave = true;
-          }
-        }
-      }
-      if (needsSave) saveData();
-    });
-  }
+  static final DatabaseReference _dbRef = FirebaseDatabase.instance.ref();
 
-  static Future<void> saveData() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('users', jsonEncode(users));
-    await prefs.setString('activeOrders', jsonEncode(activeOrders));
-    await prefs.setString('orderHistory', jsonEncode(orderHistory));
-    await prefs.setString('validCodes', jsonEncode(validCaptainCodes));
+  static Future<void> saveDataToCloud() async {
+    try {
+      await _dbRef.child('activeOrders').set(activeOrders);
+      await _dbRef.child('users').set(users);
+      await _dbRef.child('orderHistory').set(orderHistory);
+      await _dbRef.child('validCodes').set(validCaptainCodes);
+    } catch (e) {
+      debugPrint("Cloud save error: $e");
+    }
   }
 
   static Future<void> loadData() async {
+    try {
+      DataSnapshot userSnap = await _dbRef.child('users').get();
+      if (userSnap.value != null) {
+        Map<dynamic, dynamic> decoded = userSnap.value as Map<dynamic, dynamic>;
+        users = decoded.map((k, v) => MapEntry(k.toString(), Map<String, String>.from(v as Map)));
+      }
+
+      DataSnapshot orderSnap = await _dbRef.child('activeOrders').get();
+      if (orderSnap.value != null) {
+        try {
+          List<dynamic> rawList = orderSnap.value as List<dynamic>;
+          activeOrders = rawList.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        } catch (_) {
+          Map<dynamic, dynamic> data = orderSnap.value as Map<dynamic, dynamic>;
+          activeOrders.clear();
+          data.forEach((key, value) {
+            activeOrders.add(Map<String, dynamic>.from(value));
+          });
+        }
+      }
+
+      DataSnapshot historySnap = await _dbRef.child('orderHistory').get();
+      if (historySnap.value != null) {
+        try {
+          List<dynamic> rawList = historySnap.value as List<dynamic>;
+          orderHistory = rawList.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        } catch (_) {}
+      }
+
+      DataSnapshot codesSnap = await _dbRef.child('validCodes').get();
+      if (codesSnap.value != null) {
+        List<dynamic> rawList = codesSnap.value as List<dynamic>;
+        validCaptainCodes = rawList.map((e) => e.toString()).toList();
+      }
+    } catch (e) {
+      debugPrint("Cloud load error: $e");
+    }
+
     SharedPreferences prefs = await SharedPreferences.getInstance();
     loggedInPhone = prefs.getString('phone');
     loggedInRole = prefs.getString('role');
     loggedInVehicle = prefs.getString('vehicle');
-    
-    if (prefs.containsKey('users')) {
-      Map<String, dynamic> decoded = jsonDecode(prefs.getString('users')!);
-      users = decoded.map((k, v) => MapEntry(k, Map<String, String>.from(v)));
-    }
-    if (prefs.containsKey('activeOrders')) {
-      List<dynamic> rawList = jsonDecode(prefs.getString('activeOrders')!);
-      activeOrders = rawList.map((e) => Map<String, dynamic>.from(e)).toList();
-    }
-    if (prefs.containsKey('orderHistory')) {
-      List<dynamic> rawList = jsonDecode(prefs.getString('orderHistory')!);
-      orderHistory = rawList.map((e) => Map<String, dynamic>.from(e)).toList();
-    }
-    if (prefs.containsKey('validCodes')) {
-      List<dynamic> rawList = jsonDecode(prefs.getString('validCodes')!);
-      validCaptainCodes = rawList.map((e) => e.toString()).toList();
-    }
   }
 }
 
@@ -111,7 +120,7 @@ class _SplashScreenState extends State<SplashScreen> {
     super.initState();
     Timer(const Duration(milliseconds: 1500), () {
       if (!mounted) return;
-      if (AppSession.loggedInPhone != null) {
+      if (AppSession.loggedInPhone != null && AppSession.loggedInPhone!.isNotEmpty) {
         if (AppSession.loggedInRole == 'عميل') {
           Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ClientHomeScreen()));
         } else if (AppSession.loggedInRole == 'إدارة') {
@@ -148,7 +157,7 @@ class _SplashScreenState extends State<SplashScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(20)),
               child: const Text(
-                'خدمة 24/24',
+                'خدمة 24/24 السحابية',
                 style: TextStyle(color: Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
               ),
             ),
@@ -174,6 +183,9 @@ class _LoginScreenState extends State<LoginScreen> {
     String p = _phone.text.trim();
     String pwd = _pass.text.trim();
 
+    // جلب أحدث بيانات المستخدمين من السيرفر قبل التحقق
+    await AppSession.loadData();
+
     if (p == '0930306060' && pwd == '20010') {
       _saveSessionAndNavigate(p, 'إدارة', null, const AdminHomeScreen());
       return;
@@ -191,7 +203,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('البيانات غير صحيحة، يرجى إنشاء حساب')),
+          const SnackBar(content: Text('البيانات غير صحيحة، يرجى التأكد أو إنشاء حساب')),
         );
       }
     }
@@ -202,7 +214,7 @@ class _LoginScreenState extends State<LoginScreen> {
     AppSession.loggedInRole = role; 
     AppSession.loggedInVehicle = vehicle;
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('phone', phone); 
+    await prefs.setString('phone', phone);
     await prefs.setString('role', role);
     if (vehicle != null) await prefs.setString('vehicle', vehicle);
     if (mounted) {
@@ -222,7 +234,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 children: [
                   const Icon(Icons.local_shipping, size: 70, color: Color(0xFF311B92)),
                   const SizedBox(height: 10),
-                  const Text('تسجيل الدخول', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  const Text('تسجيل الدخول السحابي', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 25),
                   TextField(
                     controller: _phone,
@@ -306,11 +318,14 @@ class _ClientRegisterScreenState extends State<ClientRegisterScreen> {
     String p = _phone.text.trim(); 
     String pwd = _pass.text.trim();
     if (p.isEmpty || pwd.isEmpty) return;
+    
+    await AppSession.loadData();
     AppSession.users[p] = {'pass': pwd, 'role': 'عميل'}; 
-    await AppSession.saveData();
+    await AppSession.saveDataToCloud();
+    
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم إنشاء الحساب! قم بتسجيل الدخول')),
+        const SnackBar(content: Text('تم إنشاء الحساب سحابياً! قم بتسجيل الدخول')),
       );
       Navigator.pop(context);
     }
@@ -392,6 +407,7 @@ class _CaptainRegisterScreenState extends State<CaptainRegisterScreen> {
   }
 
   void _activate() async {
+    await AppSession.loadData();
     String enteredCode = _code.text.trim();
     if (!AppSession.validCaptainCodes.contains(enteredCode)) { 
       if (mounted) {
@@ -406,10 +422,10 @@ class _CaptainRegisterScreenState extends State<CaptainRegisterScreen> {
     if (p.isEmpty || pwd.isEmpty) return;
     AppSession.validCaptainCodes.remove(enteredCode);
     AppSession.users[p] = {'pass': pwd, 'role': 'كابتن', 'vehicle': _vehicle}; 
-    await AppSession.saveData();
+    await AppSession.saveDataToCloud();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تفعيل الحساب! قم بتسجيل الدخول')),
+        const SnackBar(content: Text('تم تفعيل الحساب سحابياً! قم بتسجيل الدخول')),
       );
       Navigator.pop(context);
     }
@@ -492,11 +508,12 @@ class AdminHomeScreen extends StatefulWidget {
 class _AdminHomeScreenState extends State<AdminHomeScreen> {
   final _newCodeController = TextEditingController();
 
-  void _generateCode() { 
+  void _generateCode() async { 
     if (_newCodeController.text.isNotEmpty) { 
+      await AppSession.loadData();
       setState(() { 
         AppSession.validCaptainCodes.add(_newCodeController.text.trim()); 
-        AppSession.saveData(); 
+        AppSession.saveDataToCloud(); 
         _newCodeController.clear(); 
       }); 
     } 
@@ -508,15 +525,17 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
       length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('لوحة التحكم'),
+          title: const Text('لوحة التحكم السحابية'),
           backgroundColor: Colors.black87,
           foregroundColor: Colors.white,
           actions: [
             IconButton(
               icon: const Icon(Icons.logout),
               onPressed: () async { 
-                await (await SharedPreferences.getInstance()).clear(); 
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.clear();
                 AppSession.loggedInPhone = null; 
+                AppSession.loggedInRole = null;
                 if (mounted) {
                   Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
                 } 
@@ -574,10 +593,11 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                           title: Text(AppSession.validCaptainCodes[i]),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () { 
+                            onPressed: () async { 
+                              await AppSession.loadData();
                               setState(() { 
                                 AppSession.validCaptainCodes.removeAt(i); 
-                                AppSession.saveData(); 
+                                AppSession.saveDataToCloud(); 
                               }); 
                             },
                           ),
@@ -628,17 +648,21 @@ class ClientHomeScreen extends StatefulWidget {
 }
 
 class _ClientHomeScreenState extends State<ClientHomeScreen> {
-  Timer? _uiTimer;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _uiTimer = Timer.periodic(const Duration(seconds: 1), (t) { if (mounted) setState(() {}); });
+    // تحديث دوري لجلب أحدث حالة الطلبات من السيرفر السحابي
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      await AppSession.loadData();
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() { 
-    _uiTimer?.cancel(); 
+    _refreshTimer?.cancel(); 
     super.dispose(); 
   }
 
@@ -647,7 +671,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
     String myPhone = AppSession.loggedInPhone ?? '';
     var myOrder = AppSession.activeOrders.firstWhere((o) => o['clientPhone'] == myPhone, orElse: () => {});
     return Scaffold(
-      appBar: AppBar(title: const Text('تطبيق التوصيل'), backgroundColor: const Color(0xFF311B92), foregroundColor: Colors.white),
+      appBar: AppBar(title: const Text('تطبيق التوصيل السحابي'), backgroundColor: const Color(0xFF311B92), foregroundColor: Colors.white),
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -677,8 +701,10 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
               leading: const Icon(Icons.exit_to_app, color: Colors.red),
               title: const Text('خروج'),
               onTap: () async { 
-                await (await SharedPreferences.getInstance()).clear(); 
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.clear();
                 AppSession.loggedInPhone = null; 
+                AppSession.loggedInRole = null;
                 if (mounted) {
                   Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
                 } 
@@ -703,10 +729,11 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                         const SizedBox(height: 10),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                          onPressed: () { 
+                          onPressed: () async { 
+                            await AppSession.loadData();
                             setState(() { 
-                              AppSession.activeOrders.remove(myOrder); 
-                              AppSession.saveData(); 
+                              AppSession.activeOrders.removeWhere((o) => o['clientPhone'] == myPhone); 
+                              AppSession.saveDataToCloud(); 
                             }); 
                           },
                           child: const Text('حسناً، إغلاق'),
@@ -725,7 +752,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                         Text(
                           myOrder['status'] == 'priced' 
                             ? 'عرض السعر من الكابتن: ${myOrder['price']} ل.س' 
-                            : (myOrder['status'] == 'accepted' ? 'تمت الموافقة! الكابتن بطريقه إليك' : 'جاري البحث عن كابتن... (${myOrder['timeAtCurrentCaptain']}ث)'),
+                            : (myOrder['status'] == 'accepted' ? 'تمت الموافقة! الكابتن بطريقه إليك' : 'جاري البحث عن كابتن...'),
                           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         if (myOrder['status'] == 'accepted') ...[
@@ -739,17 +766,19 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                             children: [
                               ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                                onPressed: () { 
+                                onPressed: () async { 
+                                  await AppSession.loadData();
                                   setState(() { myOrder['status'] = 'accepted'; }); 
-                                  AppSession.saveData(); 
+                                  AppSession.saveDataToCloud(); 
                                 },
                                 child: const Text('موافقة'),
                               ),
                               ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                                onPressed: () { 
-                                  setState(() { AppSession.activeOrders.remove(myOrder); }); 
-                                  AppSession.saveData(); 
+                                onPressed: () async { 
+                                  await AppSession.loadData();
+                                  setState(() { AppSession.activeOrders.removeWhere((o) => o['clientPhone'] == myPhone); }); 
+                                  AppSession.saveDataToCloud(); 
                                 },
                                 child: const Text('إلغاء'),
                               ),
@@ -848,6 +877,7 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
   void _sendOrder() async {
     if (_from.text.isEmpty || _to.text.isEmpty) return;
     
+    await AppSession.loadData();
     List<String> availableCaptains = [];
     AppSession.users.forEach((phone, data) {
       if (data['role'] == 'كابتن' && data['vehicle'] == _vehicle) availableCaptains.add(phone);
@@ -861,8 +891,6 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       }
       return;
     }
-    
-    availableCaptains.shuffle();
 
     AppSession.activeOrders.add({
       'category': widget.category, 
@@ -874,11 +902,10 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       'status': 'pending', 
       'price': '', 
       'captainPhone': '',
-      'captainQueue': availableCaptains, 
       'targetCaptain': availableCaptains[0], 
-      'timeAtCurrentCaptain': 0,
     });
-    await AppSession.saveData();
+    
+    await AppSession.saveDataToCloud();
     if (mounted) Navigator.pop(context);
   }
 
@@ -930,25 +957,21 @@ class CaptainHomeScreen extends StatefulWidget {
 
 class _CaptainHomeScreenState extends State<CaptainHomeScreen> {
   final Map<String, TextEditingController> _prices = {};
-  Timer? _ringTimer;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _ringTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) return;
-      setState(() {}); 
-      var pending = AppSession.activeOrders.where((o) => o['status'] == 'pending' && o['targetCaptain'] == AppSession.loggedInPhone).toList();
-      if (pending.isNotEmpty) {
-        SystemSound.play(SystemSoundType.click);
-        HapticFeedback.vibrate();
-      }
+    // تحديث دوري لجلب الطلبات الموجهة للكابتن من السيرفر فوراً
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      await AppSession.loadData();
+      if (mounted) setState(() {});
     });
   }
 
   @override
   void dispose() { 
-    _ringTimer?.cancel(); 
+    _refreshTimer?.cancel(); 
     super.dispose(); 
   }
 
@@ -960,15 +983,17 @@ class _CaptainHomeScreenState extends State<CaptainHomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('لوحة الكابتن'),
+        title: const Text('لوحة الكابتن السحابية'),
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: const Icon(Icons.exit_to_app),
             onPressed: () async { 
-              await (await SharedPreferences.getInstance()).clear(); 
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
               AppSession.loggedInPhone = null; 
+              AppSession.loggedInRole = null;
               if (mounted) {
                 Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
               } 
@@ -1009,11 +1034,12 @@ class _CaptainHomeScreenState extends State<CaptainHomeScreen> {
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                       onPressed: () async { 
+                        await AppSession.loadData();
                         setState(() { 
                           AppSession.orderHistory.add(ord); 
                           AppSession.activeOrders.remove(ord); 
                         }); 
-                        await AppSession.saveData(); 
+                        await AppSession.saveDataToCloud(); 
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم التسليم وإنهاء الطلب')));
                         } 
@@ -1026,71 +1052,73 @@ class _CaptainHomeScreenState extends State<CaptainHomeScreen> {
             )),
             const Divider(height: 30),
           ],
-          const Text('طلبات موجهة لك (باقي لها 5 ثوانٍ):', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.red)),
+          const Text('الطلبات المتاحة الموجهة لك:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.teal)),
           const SizedBox(height: 10),
-          ...pendingOrders.map((ord) {
-            String id = ord['clientPhone'];
-            if (!_prices.containsKey(id)) _prices[id] = TextEditingController();
-            int secondsLeft = 5 - (ord['timeAtCurrentCaptain'] as int? ?? 0);
-            
-            return Card(
-              elevation: 3,
-              margin: const EdgeInsets.only(bottom: 12),
-              child: Padding(
-                padding: const EdgeInsets.all(14.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.timer, color: Colors.red),
-                        const SizedBox(width: 8),
-                        Text('ينتهي بعد: $secondsLeft ثانية', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.red)),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text('من: ${ord['from']}'),
-                    Text('إلى: ${ord['to']}'),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _prices[id],
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'سعر التوصيل المقترح (ل.س)', border: OutlineInputBorder()),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                            onPressed: () async { 
-                              if (_prices[id]!.text.isEmpty) return; 
-                              setState(() { 
-                                ord['price'] = _prices[id]!.text; 
-                                ord['captainPhone'] = myPhone; 
-                                ord['status'] = 'priced'; 
-                              }); 
-                              await AppSession.saveData(); 
-                            },
-                            child: const Text('إرسال السعر'),
+          pendingOrders.isEmpty 
+            ? const Padding(
+                padding: EdgeInsets.all(20.0),
+                child: Center(child: Text('لا توجد طلبات جديدة حالياً', style: TextStyle(color: Colors.grey, fontSize: 16))),
+              )
+            : Column(
+                children: pendingOrders.map((ord) {
+                  String id = ord['clientPhone'];
+                  if (!_prices.containsKey(id)) _prices[id] = TextEditingController();
+                  
+                  return Card(
+                    elevation: 3,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('القسم: ${ord['category']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          const SizedBox(height: 6),
+                          Text('من: ${ord['from']}'),
+                          Text('إلى: ${ord['to']}'),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _prices[id],
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'سعر التوصيل المقترح (ل.س)', border: OutlineInputBorder()),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                          onPressed: () async { 
-                            setState(() { ord['timeAtCurrentCaptain'] = 5; }); 
-                            await AppSession.saveData(); 
-                          },
-                          child: const Text('رفض'),
-                        ),
-                      ],
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                                  onPressed: () async { 
+                                    if (_prices[id]!.text.isEmpty) return; 
+                                    await AppSession.loadData();
+                                    setState(() { 
+                                      ord['price'] = _prices[id]!.text; 
+                                      ord['captainPhone'] = myPhone; 
+                                      ord['status'] = 'priced'; 
+                                    }); 
+                                    await AppSession.saveDataToCloud(); 
+                                  },
+                                  child: const Text('إرسال السعر'),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                                onPressed: () async { 
+                                  await AppSession.loadData();
+                                  setState(() { AppSession.activeOrders.remove(ord); }); 
+                                  await AppSession.saveDataToCloud(); 
+                                },
+                                child: const Text('رفض'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
-                ),
+                  );
+                }).toList(),
               ),
-            );
-          }),
         ],
       ),
     );
