@@ -15,22 +15,19 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '17'
+          java-version: '11'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
+          flutter-version: '3.16.5'
           channel: 'stable'
 
-      - name: Create Project and Get Dependencies
+      - name: Build with standard template
         run: |
-          rm -rf android ios web linux macos windows
-          flutter create . --org com.syriacash --project-name syria_cash --platforms=android
+          flutter create . --org com.syriacash --project-name syria_cash
           flutter pub get
-
-      - name: Build APK Debug
-        run: flutter build apk --debug
+          flutter build apk --debug
 
       - name: Upload APK file
         uses: actions/upload-artifact@v4
