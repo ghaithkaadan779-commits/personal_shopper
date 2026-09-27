@@ -23,13 +23,16 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build APK with force
+      - name: Create fresh Flutter app & inject code
         run: |
-          flutter config --no-analytics
-          flutter build apk --release --target-platform android-arm,android-arm64,android-x64
+          # إنشاء مشروع فلاتر نظيف بالاسم والهيكل الصحيح
+          flutter create . --org com.syriacash --project-name syria_cash --platforms=android
+          
+          # التأكد من تثبيت المكتبات
+          flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
 
       - name: Upload APK file
         uses: actions/upload-artifact@v4
