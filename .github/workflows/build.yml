@@ -23,20 +23,17 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      - name: Clean and Setup Project
+      - name: Create Project and Get Dependencies
         run: |
-          # الاحتفاظ فقط بملفاتك المهمة وحذف الباقي لتنظيف البيئة
           rm -rf android ios web linux macos windows
           flutter create . --org com.syriacash --project-name syria_cash --platforms=android
+          flutter pub get
 
-      - name: Get Dependencies
-        run: flutter pub get
-
-      - name: Build APK Release
-        run: flutter build apk --release --no-pub
+      - name: Build APK Debug
+        run: flutter build apk --debug
 
       - name: Upload APK file
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
